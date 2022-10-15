@@ -17,7 +17,7 @@ MSSubClass: Identifies the type of dwelling involved in the sale. (Тип жил
        180	PUD - MULTILEVEL - INCL SPLIT LEV/FOYER
        190	2 FAMILY CONVERSION - ALL STYLES AND AGES
 
-MSZoning: Identifies the general zoning classification of the sale. (Общая зональная классификация продажи)
+MSZoning: Identifies the general zoning classification of the sale. (Общая зональная классификация области продажи)
 		
        A	Agriculture
        C	Commercial
@@ -374,7 +374,7 @@ FullBath: Full bathrooms above grade
 
 HalfBath: Half baths above grade
 
-Bedroom: Bedrooms above grade (does NOT include basement bedrooms)
+BedroomAbvGr: Bedrooms above grade (does NOT include basement bedrooms)
 
 Kitchen: Kitchens above grade
 
