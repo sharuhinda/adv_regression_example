@@ -21,9 +21,9 @@ class DFDropColumns(BaseEstimator, TransformerMixin):
     Class to drop columns that are redundant for the model
     """
 
-    def __init__(self, cols=None) -> None: # cols is a list containig column names to drop
+    def __init__(self, columns=None) -> None: # cols is a list containig column names to drop
         #super().__init__()
-        self.cols = cols
+        self.columns = columns
 
 
     def fit(self, X, y=None):
@@ -31,9 +31,39 @@ class DFDropColumns(BaseEstimator, TransformerMixin):
 
 
     def transform(self, X, y=None):
-        if (self.cols is not None) and (len(self.cols) > 0):
-            return X.drop(columns=[col for col in self.cols if col in X.columns])
+        if (self.columns is not None) and (len(self.columns) > 0):
+            return X.drop(columns=[col for col in self.columns if col in X.columns])
         return X
+
+#=====================================================
+
+class DFApplyFuncToColumns(BaseEstimator, TransformerMixin):
+    """
+    Apply different funcs to columns
+    Makes possible columns' type and more complex transformations
+    """
+
+    def __init__(self, columns=None) -> None:
+        """
+        columns arg should be the dict {'column_name': func_to_apply}
+        """
+        self.columns = columns
+        pass
+
+
+    def fit(self, X, y=None):
+        return self
+
+    
+    def transform(self, X, y=None):
+        if self.columns is None or len(self.columns) == 0:
+            return X
+
+        X_transformed = X.copy()
+        for c, func in self.columns.items():
+            X_transformed[c] = X_transformed[c].apply(func)
+
+        return X_transformed
 
 #=====================================================
 
@@ -63,6 +93,124 @@ class DFCreateAdditionalFeatures(BaseEstimator, TransformerMixin):
             X_transformed['Remodeled'] = X['YearRemodAdd'] > X['YearBuilt']
         return X_transformed
 
+#=====================================================
+
+class DFValuesReplacer(BaseEstimator, TransformerMixin):
+    """
+    """
+    def __init__(self, replaces=None) -> None:
+        """
+        replaces should be the dict {'column_name': {value_to_replace: value_to_replace_with}}
+        """
+        self.replaces = replaces # replaces should be in form {'column1': {'value_to_find': 'value_to_replace_with'}, ...}
+        pass
+
+
+    def fit(self, X, y=None):
+        return self
+
+
+    def transform(self, X, y=None):
+        if self.replaces is None or self.replaces == {}:
+            return X
+
+        X_transformed = X.copy()
+        #for c, val in X_transformed.columns:
+        X_transformed = X_transformed.replace(self.replaces)
+        return X_transformed
+
+#=====================================================
+
+class DFSimpleNanReplacer(BaseEstimator, TransformerMixin):
+    """
+    """
+
+    def __init__(self, columns, default_values) -> None:
+        self.columns = columns
+        self.default_values = default_values
+        pass
+
+
+    def fit(self, X, y=None):
+        return self
+
+
+    def transform(self, X, y=None):
+        X_transformed = X.copy()
+
+        replacements = {c: self.default_values.get(c, np.nan) for c in self.columns}
+        X_transformed.fillna(replacements, inplace=True)
+
+        return X_transformed
+
+#=====================================================
+
+class DFSimpleImputer(BaseEstimator, TransformerMixin):
+    """
+    """
+
+    def __init__(self, col_strategy=None) -> None:
+        """
+        col_strategy arg should be the dict {'column_name': 'strategy'}
+            where strategy = 'most_frequent'|'least_frequent'
+        """
+        self.col_strategy = col_strategy
+        pass
+
+
+    def fit(self, X, y=None):
+        self.imputers_ = {}
+        for c, strategy in self.col_strategy.items():
+            if c in X.columns:
+                freq = X[c].value_counts()
+                if len(freq) == 0:
+                    self.imputers_[c] = None
+                else:
+                    if strategy == 'most_frequent':
+                        self.imputers_[c] = freq.index[0]
+                    elif strategy == 'least_frequent':
+                        self.imputers_[c] = freq.index[-1]
+                    else:
+                        raise TypeError(f'Wrong strategy: {strategy}')
+            else:
+                self.imputers_[c] = None
+        return self
+
+
+    def transform(self, X, y=None):
+        X_transformed = X.copy()
+        for c, value in self.imputers_.items():
+            if value is not None:
+                m = X_transformed[c].isna()
+                X_transformed.loc[m, c] = value
+        return X_transformed
+
+#=====================================================
+
+class DFChainedNanReplacer(BaseEstimator, TransformerMixin):
+    """
+    """
+
+    def __init__(self, chained_features, default_values) -> None:
+        self.chained_features = chained_features
+        self.default_values = default_values
+        pass
+
+
+    def fit(self, X, y=None):
+        return self
+
+
+    def transform(self, X, y=None):
+        X_transformed = X.copy()
+
+        for lead_col, chain in self.chained_features.items():
+            m = X_transformed[lead_col].isna()
+            for c in chain:
+                X_transformed.loc[m, c] = self.default_values.get(c, np.nan)
+            X_transformed.loc[m, lead_col] = self.default_values.get(lead_col, np.nan)
+
+        return X_transformed
 
 #=====================================================
 
@@ -71,7 +219,7 @@ class DFReplaceMeaningfulNANs(BaseEstimator, TransformerMixin):
     Transformation class to replace NaN values where they are meaningful and not missed data
     """
 
-    single_features = ['Street', 'Alley', 'Fence', 'Electrical']
+    single_features = ['Alley', 'Fence', 'Electrical']
     basement_features = ['BsmtQual', 'BsmtCond', 'BsmtExposure', 'BsmtFinType1', 'BsmtFinSF1', 'BsmtFinType2', 'BsmtFinSF2', 'BsmtUnfSF', 'TotalBsmtSF', 'BsmtFullBath', 'BsmtHalfBath']
     garage_features = ['GarageType', 'GarageYrBlt', 'GarageFinish', 'GarageCars', 'GarageArea', 'GarageQual', 'GarageCond']
     feature_pairs = [
@@ -80,6 +228,8 @@ class DFReplaceMeaningfulNANs(BaseEstimator, TransformerMixin):
         ['MiscFeature', 'MiscVal'],
         ['MasVnrType', 'MasVnrArea']
     ]
+    """
+    # Left from 1st version of class. It's more convenient to pass values directly. This gives full control.
     cols_nans = {  # Default values to replace NaNs with
         'Street': 'Abs',
         'Alley': 'Abs',
@@ -98,12 +248,12 @@ class DFReplaceMeaningfulNANs(BaseEstimator, TransformerMixin):
         'MiscFeature': 'Abs', 'MiscVal': 0,
         'MasVnrType': 'Abs', 'MasVnrArea': 0,
     }
-    
-    def __init__(self, cols_nans=None) -> None: # cols_nans is a dictionary containig column names and default values to replace NaNs with if default values not suit
+    """
+
+    def __init__(self, default_nans) -> None: # cols_nans is a dictionary containig column names and default values to replace NaNs with if default values not suit
         #super().__init__()
-        if cols_nans is not None:
-            for col_name in cols_nans.keys():
-                self.cols_nans[col_name] = cols_nans[col_name]
+        if default_nans is not None:
+            self.default_nans = default_nans
 
 
     def fit(self, X, y=None):
@@ -112,9 +262,6 @@ class DFReplaceMeaningfulNANs(BaseEstimator, TransformerMixin):
 
     def transform(self, X, y=None):
         X_transformed = X.copy()
-        replacements = {x: self.cols_nans[x] for x in self.single_features}
-        #print(replacements)
-        X_transformed.fillna(replacements, inplace=True)
         
         m = X_transformed['BsmtQual'].isna()
         for column in self.basement_features:
@@ -124,11 +271,11 @@ class DFReplaceMeaningfulNANs(BaseEstimator, TransformerMixin):
         for column in self.garage_features:
             X_transformed.loc[m, column] = self.cols_nans.get(column, np.nan)
 
-        
-        for pair in self.feature_pairs:
-            m = X_transformed[pair[0]].isna()
-            for column in pair:
-                X_transformed.loc[m, column] = self.cols_nans.get(column, np.nan)
+        if self.feature_pairs is not None and len(self.feature_pairs) > 0:
+            for pair in self.feature_pairs:
+                m = X_transformed[pair[0]].isna()
+                for column in pair:
+                    X_transformed.loc[m, column] = self.cols_nans.get(column, np.nan)
                 
         return X_transformed
 
@@ -141,7 +288,16 @@ class DFJoinDates(BaseEstimator, TransformerMixin):
     """
 
     def __init__(self, day_col=None, month_col=None, year_col=None, calc_period_to=None, new_column_name=None, drop_originals=False) -> None:
-        #super().__init__()
+        """
+        Calculates days from house sold based on given columns
+        Parameters:
+            day_col = <day_column_name>: str
+            month_col = <month_column_name>: str
+            year_col = <year_column_name>: str
+            calc_period_to = <target_date>: datetime
+            [new_column_name = <new_column_name>: str]
+            [drop_originals = True|False]
+        """
         self.day_col = day_col
         self.month_col = month_col
         self.year_col = year_col
@@ -161,17 +317,17 @@ class DFJoinDates(BaseEstimator, TransformerMixin):
 
 
     def transform(self, X, y=None):
-        X_transformed = X.copy()
         if self.year_col is None:
-            return X_transformed
+            return X
 
+        X_transformed = X.copy()
         if self.day_col is None:
-            days = pd.Series(['1']*len(X))
+            days = pd.Series(['1']*len(X), index=X.index)
         else:
             days = X[self.day_col].apply(str)
         
         if self.month_col is None:
-            months = pd.Series(['1']*len(X))
+            months = pd.Series(['1']*len(X), index=X.index)
         else:
             months = X[self.month_col].apply(str)
         
@@ -190,12 +346,15 @@ class DFJoinDates(BaseEstimator, TransformerMixin):
 #=====================================================
 
 class DFCalcAge(BaseEstimator, TransformerMixin):
-    """
-    Calculates period to requested year
-    'columns' arg is a dict {'original_col_name': 'age_column_name'}
-    """
+    
     def __init__(self, columns=None, calc_age_to=None, drop_originals=False) -> None:
-        #super().__init__()
+        """
+        Creates new columns with calculated period to requested year
+        Parameters:
+            'columns' arg is a dict {'original_col_name': 'age_column_name'}
+            'calc_age_to' = <year>: int
+            'drop_originals' = True|False
+        """
         self.age_columns = columns
         self.calc_age_to = calc_age_to
         self.drop_originals = drop_originals
@@ -251,7 +410,13 @@ class DFOneHotCategoriesCombined(BaseEstimator, TransformerMixin):
     Categories list will be used as the source for one-hot features names which then will be checked by data in coresponding column names
     """
     def __init__(self, features_kits=None, drop_originals=False) -> None:
-        #super().__init__()
+        """
+        feature_kits = [
+            ([column_name1, column_name2, ...], [categoryA, categoryB, ...]), 
+            ([column_nameN, column_nameN+1, ...], [categoryK, categoryK+1, ...])
+        ]
+        drop_originals = True|False
+        """
         self.features_kits = features_kits
         self.drop_originals = drop_originals
 
@@ -260,14 +425,14 @@ class DFOneHotCategoriesCombined(BaseEstimator, TransformerMixin):
         return self
 
 
-    def get_onehot_encoding(self, X, col_names, target_value):
+    def get_onehot_encoding_(self, sample, col_names, target_value):
         """
         Function should return 1.0 if the 'category' has been found at least in 1 column from 'col_names'
         Otherwise return 0.0
         """
         onehot_value = False
         for column in col_names:
-            onehot_value = onehot_value or (X[column] == target_value)
+            onehot_value = onehot_value or (sample[column] == target_value)
         return float(onehot_value)
 
 
@@ -278,19 +443,54 @@ class DFOneHotCategoriesCombined(BaseEstimator, TransformerMixin):
         onehot_features = None
         for kit in self.features_kits:
             for category in kit[1]:
-                serie = X.apply(self.get_onehot_encoding, args=[kit[0], category], axis=1)
+                serie = X.apply(self.get_onehot_encoding_, args=[kit[0], category], axis=1)
                 serie.rename(category, inplace=True)
                 if onehot_features is None:
                     onehot_features = serie
                 else:
                     onehot_features = pd.concat([onehot_features, serie], axis=1)
         if self.drop_originals:
-            all_columns = []
+            drop_columns = []
             for kit in self.features_kits:
-                all_columns += kit[0]
-            return pd.concat([X.drop(columns=all_columns), onehot_features], axis=1)
+                drop_columns += kit[0]
+            return pd.concat([X.drop(columns=drop_columns), onehot_features], axis=1)
         return pd.concat([X, onehot_features], axis=1)
 
+
+#=====================================================
+
+class DFSetCategoryDType(BaseEstimator, TransformerMixin):
+    """
+    """
+
+    def __init__(self, columns) -> None:
+        """
+        columns arg is the dictionary {'column_name': category_type} 
+            where category_type can be passed as:
+                pd.CategoricalDType object OR 
+                dict {'categories': [<category1>,...], ordered: True|False} 
+        """
+
+        self.columns = columns
+        pass
+
+
+    def fit(self, X, y=None):
+        return self
+
+
+    def transform(self, X, y=None):
+        if self.columns is None or len(self.columns) == 0:
+            return X
+
+        X_transformed = X.copy()
+        for c, cat_type in self.columns.items():
+            if c in X_transformed.columns:
+                if type(cat_type) is pd.CategoricalDtype:
+                    X_transformed[c] = X_transformed[c].astype(cat_type)
+                else:
+                    X_transformed[c] = X_transformed[c].astype(pd.CategoricalDtype(**cat_type))
+        return X_transformed
 
 #=====================================================
 
