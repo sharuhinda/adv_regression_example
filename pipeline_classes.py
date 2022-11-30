@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, date
 import numpy as np
 import pandas as pd
 
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder
 from sklearn.exceptions import NotFittedError
 
 from sklearn.base import BaseEstimator, TransformerMixin # for creating custom transformers based on sklearn linrary
@@ -409,7 +409,7 @@ class DFOneHotCategoriesCombined(BaseEstimator, TransformerMixin):
     ]
     Categories list will be used as the source for one-hot features names which then will be checked by data in coresponding column names
     """
-    def __init__(self, features_kits=None, drop_originals=False) -> None:
+    def __init__(self, features_kits=None, return_full_df=True, drop_originals=True) -> None:
         """
         feature_kits = [
             ([column_name1, column_name2, ...], [categoryA, categoryB, ...]), 
@@ -419,6 +419,7 @@ class DFOneHotCategoriesCombined(BaseEstimator, TransformerMixin):
         """
         self.features_kits = features_kits
         self.drop_originals = drop_originals
+        self.return_full_df = return_full_df
 
 
     def fit(self, X, y=None):
@@ -441,7 +442,10 @@ class DFOneHotCategoriesCombined(BaseEstimator, TransformerMixin):
             return X
         
         onehot_features = None
+        drop_columns = []
         for kit in self.features_kits:
+            if self.drop_originals:
+                drop_columns += kit[0]
             for category in kit[1]:
                 serie = X.apply(self.get_onehot_encoding_, args=[kit[0], category], axis=1)
                 serie.rename(category, inplace=True)
@@ -449,12 +453,10 @@ class DFOneHotCategoriesCombined(BaseEstimator, TransformerMixin):
                     onehot_features = serie
                 else:
                     onehot_features = pd.concat([onehot_features, serie], axis=1)
-        if self.drop_originals:
-            drop_columns = []
-            for kit in self.features_kits:
-                drop_columns += kit[0]
+        if self.return_full_df:
             return pd.concat([X.drop(columns=drop_columns), onehot_features], axis=1)
-        return pd.concat([X, onehot_features], axis=1)
+        else:
+            return onehot_features
 
 
 #=====================================================
@@ -595,28 +597,49 @@ class DFSetOrderedCategories(BaseEstimator, TransformerMixin):
 
 #=====================================================
 
-class DFAllCategoriesOneHotEncoder(BaseEstimator, TransformerMixin):
+class DFOneHotEncoder(BaseEstimator, TransformerMixin):
+    """
+    Encodes each column passed with individual OneHotEncoder
+    Returns DataFrame with encoded columns only or full DataFrame with encoded columns appended to the end
+    (original columns will be dropped by default until drop_originals == False)
+    !!! Incompatible with sklearn.compose.ColumnTransformer !!!
+    """
     def __init__(
         self,
-        categories="all",
+        cols_cats,
         drop=None,
         sparse=None,
         dtype=np.float64,
         handle_unknown="error",
         col_overrule_params={},
+        return_full_df=True,
+        drop_originals=True,
     ) -> None:
-        
-        self.categories = categories
+        """
+        Args:
+            cols_cats: dictionary with columns names and categories {'column_name': 'auto' | list of array-like}
+            dtype: resulting number type
+            drop: 
+            sparse: left for compatibility (will always return dense)
+            handle_unknown: 'error' | 'ignore'
+            col_overrule_params: dict to overrule default parameters for column
+            return_full_df: if full data frame should be returned (default) with new encoded columns appended to the end or encoded columns only
+            drop_originals: if original columns should be dropped from resulting DataFrame (works only if return_full_df == True)
+        """
+        self.cols_cats = cols_cats
         self.drop = drop
         self.sparse = sparse
         self.dtype = dtype
         self.handle_unknown = handle_unknown
         self.col_overrule_params = col_overrule_params
+        self.drop_originals = drop_originals
+        self.return_full_df = return_full_df
         pass
 
 
     def fit(self, X, y=None):
-        """Fit a separate OneHotEncoder for each of the columns in the dataframe
+        """
+        Fit a separate OneHotEncoder for each of the columns in the dataframe
         Args:
             X: dataframe
             y: None, ignored. This parameter exists only for compatibility with Pipeline
@@ -628,48 +651,48 @@ class DFAllCategoriesOneHotEncoder(BaseEstimator, TransformerMixin):
         if type(X) != pd.DataFrame:
             raise TypeError(f"X should be of type dataframe, not {type(X)}")
 
-        self.onehotencoders_ = []
-        self.column_names_ = []
+        self.encoders_ = {}
+        self.column_names_ = {}
 
-        for c in X.columns:
+        for c, cat in self.cols_cats.items():
             # Construct the OHE parameters using the arguments
-            ohe_params = {
-                #"categories": self.categories,
-                "drop": self.drop,
-                "sparse": False,
-                "dtype": self.dtype,
-                "handle_unknown": self.handle_unknown,
-            }
-            if self.categories == 'all':
-                ohe_params['categories'] = [list(X[c].dtype.categories)]
+            if cat == 'auto':
+                categories = 'auto'
             else:
-                ohe_params['categories'] = self.categories
+                categories = [cat]
+            enc_params = {
+                'categories': categories,
+                'drop': self.drop,
+                'sparse': False,
+                'dtype': self.dtype,
+                'handle_unknown': self.handle_unknown,
+            }
             # and update it with potential overrule parameters for the current column
-            ohe_params.update(self.col_overrule_params.get(c, {}))
+            enc_params.update(self.col_overrule_params.get(c, {}))
 
             # Regardless of how we got the parameters, make sure we always set the
             # sparsity to False
-            ohe_params["sparse"] = False
+            enc_params["sparse"] = False
 
             # Now create, fit, and store the onehotencoder for current column c
-            ohe = OneHotEncoder(**ohe_params)
-            self.onehotencoders_.append(ohe.fit(X.loc[:, [c]]))
+            enc = OneHotEncoder(**enc_params)
+            self.encoders_[c] = enc.fit(X.loc[:, [c]])
 
-            # Get the feature names and replace each x0_ with empty and after that
-            # surround the categorical value with [] and prefix it with the original
-            # column name
-            feature_names = ohe.get_feature_names_out()
-            feature_names = [x.replace("x0_", "") for x in feature_names]
-            feature_names = [f"{c}_{x}" for x in feature_names]
+            # Get the feature names and replace each x0 with the original column name
+            feature_names = enc.get_feature_names_out()
+            feature_names = [x.replace("x0", c) for x in feature_names]
+            #feature_names = [x.replace("x0_", "") for x in feature_names]
+            #feature_names = [f"{c}_{x}" for x in feature_names]
             #feature_names = [f"{c}[{x}]" for x in feature_names]
 
-            self.column_names_.append(feature_names)
+            self.column_names_[c] = feature_names
 
         return self
 
         
     def transform(self, X, y=None):
-        """Transform X using the one-hot-encoding per column
+        """
+        Transform X using the one-hot-encoding per column
         Args:
             X: Dataframe that is to be one hot encoded
         Returns:
@@ -679,22 +702,122 @@ class DFAllCategoriesOneHotEncoder(BaseEstimator, TransformerMixin):
             TypeError if X is not of type DataFrame
         """
         if type(X) != pd.DataFrame:
-            raise TypeError(f"X should be of type dataframe, not {type(X)}")
+            raise TypeError(f'X should be of type dataframe, not {type(X)}')
 
-        if not hasattr(self, "onehotencoders_"):
-            raise NotFittedError(f"{type(self).__name__} is not fitted")
+        if not hasattr(self, 'encoders_'):
+            raise NotFittedError(f'{type(self).__name__} is not fitted')
 
-        all_df = []
+        new_columns = []
+        for c, enc in self.encoders_.items():
+            transformed_col = enc.transform(X.loc[:, [c]])
+            df_col = pd.DataFrame(transformed_col, columns=self.column_names_[c], index=X.index)
+            new_columns.append(df_col)
 
-        for i, c in enumerate(X.columns):
-            ohe = self.onehotencoders_[i]
+        if self.return_full_df:
+            X_transformed = X.copy()
+            if self.drop_originals:
+                X_transformed.drop(columns=self.encoders_.keys(), inplace=True)
+            return pd.concat([X_transformed]+new_columns, axis=1)
+        return pd.concat(new_columns, axis=1)
 
-            transformed_col = ohe.transform(X.loc[:, [c]])
+#=====================================================
 
-            df_col = pd.DataFrame(transformed_col, columns=self.column_names_[i])
-            all_df.append(df_col)
+class DFOrdinalEncoder(BaseEstimator, TransformerMixin):
+    """
+    Encodes each column passed with individual OrdinalEncoder
+    Returns DataFrame with encoded columns only or full DataFrame with encoded values in columns passed
+    !!! Incompatible with sklearn.compose.ColumnTransformer !!!
+    """
 
-        return pd.concat(all_df, axis=1)
+    def __init__(self, cols_cats=None, dtype=np.float64, handle_unknown='error', unknown_value=None, encoded_missing_value=np.nan, col_overrule_params={}, return_full_df=True) -> None:
+        """
+        Args:
+            columns: dict = {'column_name': 'auto' | list of array-like}
+            dtype: resulting number type
+            handle_unknown: 'error' | 'use_encoded_value'
+            unknown_value: int | np.nan, use if 'handle_unknown' == 'use_encoded_value'
+            encoded_missing_value: int | np.nan
+            col_overrule_params: dict to overrule default parameters for column
+        """
+        self.cols_cats = cols_cats
+        self.dtype = dtype
+        self.handle_unknown = handle_unknown
+        self.unknown_value = unknown_value
+        self.encoded_missing_value = encoded_missing_value
+        self.col_overrule_params = col_overrule_params
+        self.return_full_df = return_full_df
+        pass
+
+
+    def fit(self, X, y=None):
+        """
+        Fit separate OrdinalEncoder for columns in 'columns' arg 
+        Args:
+            X: DataFrame
+            y: None, ignored. This parameter exists only for compatibility with Pipeline
+        Returns
+            self
+        Raises
+            TypeError if X is not of type DataFrame
+        """
+        if type(X) != pd.DataFrame:
+            raise TypeError(f"X should be of type pd.DataFrame, not {type(X)}")
+        
+        self.encoders_ = {}
+        
+        for c, cat in self.cols_cats.items():
+            if cat == 'auto':
+                categories = 'auto'
+            else:
+                categories = [cat]
+            enc_params = {
+                'categories': categories,
+                'dtype': self.dtype,
+                'handle_unknown': self.handle_unknown,
+                'unknown_value': self.unknown_value,
+                #'encoded_missing_value': self.encoded_missing_value
+            }
+            # and update it with potential overrule parameters for the current column
+            enc_params.update(self.col_overrule_params.get(c, {}))
+            
+            enc = OrdinalEncoder(**enc_params)
+            
+            self.encoders_[c] = enc.fit(X.loc[:, [c]])
+        return self
+
+
+    def transform(self, X, y=None):
+        """
+        Transform X using the trained OrdinalEncoder per column
+        Args:
+            X: DataFrame to be encoded
+        Returns:
+            DataFrame with columns changed to encoded values
+        Raises:
+            NotFittedError if the transformer is not yet fitted
+            TypeError if X is not of type DataFrame
+        """
+        
+        if type(X) != pd.DataFrame:
+            raise TypeError(f"X should be of type pd.DataFrame, not {type(X)}")
+
+        if not hasattr(self, 'encoders_'):
+            raise NotFittedError(f'{type(self).__name__} is not fitted')
+
+        columns = []
+        encoded = []
+        for c, enc in self.encoders_.items():
+            columns.append(c)
+            encoded.append(pd.DataFrame(enc.transform(X.loc[:, [c]]), index=X.index, columns=[c]))
+        
+        transformed_df = pd.concat(encoded, axis=1)
+        
+        if self.return_full_df:
+            X_transformed = X.copy()
+            X_transformed[columns] = transformed_df
+            return X_transformed
+        else:
+            return transformed_df
 
 #=====================================================
 
